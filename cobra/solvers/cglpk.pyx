@@ -3,11 +3,15 @@
 
 from glpk cimport *
 from libc.stdlib cimport malloc, free
+from cpython cimport bool
 
 from tempfile import NamedTemporaryFile as _NamedTemporaryFile  # for pickling
 from os import unlink as _unlink
+from warnings import warn as _warn
 
-__glpk_version__ = glp_version()
+__glpk_version__ = str(glp_version())
+_SUPPORTS_MILP = True
+solver_name = "cglpk"
 
 __doc__ = """Bindings to GLPK
 
@@ -58,7 +62,12 @@ cdef dict ERROR_MESSAGES = {
     GLP_EINSTAB: "numerical instability",
     GLP_EDATA: "invalid data",
     GLP_ERANGE: "result out of range"
+}
 
+cdef dict METHODS = {
+    "auto": GLP_DUALP,
+    "primal": GLP_PRIMAL,
+    "dual": GLP_DUAL
 }
 
 cdef check_error(int result):
@@ -68,7 +77,19 @@ cdef check_error(int result):
         raise RuntimeError("glp_simplex failed with unknown error code 0x%x" %
                            result)
     raise RuntimeError("glp_simplex failed with error code %s: %s" %
-                    (ERROR_CODES[result], ERROR_MESSAGES[result]))
+                       (ERROR_CODES[result], ERROR_MESSAGES[result]))
+
+
+# Do not want to print out to terminal. Even when not verbose, output
+# will be redirected through the hook.
+glp_term_out(GLP_OFF)
+
+
+cdef int hook(void *info, const char *s):
+    """function to redirect sdout to python stdout"""
+    print(s)
+    return 1
+
 
 cdef class GLP:
     cdef glp_prob *glp
@@ -91,10 +112,10 @@ cdef class GLP:
         cdef int *c_rows
         cdef int *c_cols
         cdef double *c_values
-        glp_term_out(GLP_OFF)
         
         # initialize parameters
-        self.parameters.msg_lev = GLP_MSG_ERR
+        self.parameters.msg_lev = GLP_MSG_OFF
+        glp_term_hook(NULL, NULL)
 
         if cobra_model is None:
             return
@@ -104,7 +125,8 @@ cdef class GLP:
         glp_add_rows(glp, m)
         glp_add_cols(glp, n)
 
-        metabolite_id_to_index = {r.id: i for i, r in enumerate(cobra_model.metabolites, 1)}
+        metabolite_id_to_index = {r.id: i for i, r
+                                  in enumerate(cobra_model.metabolites, 1)}
 
         linear_constraint_rows = []
         linear_constraint_cols = []
@@ -172,11 +194,10 @@ cdef class GLP:
         return problem
     create_problem = classmethod(create_problem)  # decorator does not work
 
-    cpdef change_variable_bounds(self, int index, double lower_bound, double upper_bound):
-        cdef int bound_type = GLP_DB
+    cpdef change_variable_bounds(self, int index, double lower_bound,
+                                 double upper_bound):
+        cdef int bound_type = GLP_FX if lower_bound == upper_bound else GLP_DB
         assert index >= 0
-        if lower_bound == upper_bound:
-            bound_type = GLP_FX
         glp_set_col_bnds(self.glp, index + 1, bound_type, lower_bound, upper_bound)
 
     def change_coefficient(self, int met_index, int rxn_index, double value):
@@ -213,6 +234,11 @@ cdef class GLP:
         cdef glp_iocp integer_parameters = self.integer_parameters
         cdef glp_prob *glp = self.glp
 
+        if "quadratic_component" in solver_parameters:
+            q = solver_parameters.pop("quadratic_component")
+            if q is not None:
+                raise ValueError("quadratic component must be None for glpk")
+
         for key, value in solver_parameters.items():
             self.set_parameter(key, value)
 
@@ -223,16 +249,17 @@ cdef class GLP:
         # because glpk itself is not thread safe
 
         #with nogil:  # we can use this if glpk ever gets thread-safe malloc
-        check_error(glp_simplex(glp, &parameters))
+        # try to solve the problem with the existing basis
+        if glp_simplex(glp, &parameters) != 0:
+            glp_adv_basis(glp, 0)
+            check_error(glp_simplex(glp, &parameters))
         if self.is_mip():
             self.integer_parameters.tm_lim = self.parameters.tm_lim
             self.integer_parameters.msg_lev = self.parameters.msg_lev
             #self.integer_parameters.tol_bnd = self.parameters.tol_bnd
             #self.integer_parameters.tol_piv = self.parameters.tol_piv
-            glp_term_out(GLP_OFF)  # prevent verborse MIP output
             #with nogil:
             check_error(glp_intopt(glp, &integer_parameters))
-            glp_term_out(GLP_ON)
         return self.get_status()
 
     def solve(cls, cobra_model, **kwargs):
@@ -245,7 +272,8 @@ cdef class GLP:
     solve = classmethod(solve)
 
     def get_status(self):
-        cdef int result = glp_mip_status(self.glp) if self.is_mip() else glp_get_status(self.glp)
+        cdef int result = glp_mip_status(self.glp) if self.is_mip() \
+            else glp_get_status(self.glp)
         if result == GLP_OPT:
             return "optimal"
         if result == GLP_FEAS:
@@ -268,11 +296,7 @@ cdef class GLP:
             raise ValueError("%s is not a valid objective sense" % objective_sense)
 
     cpdef set_parameter(self, parameter_name, value):
-        """set a solver parameter
-
-        The following parameters are supported
-        time_limit: number of seconds
-        """
+        """set a solver parameter"""
         if parameter_name == "objective_sense":
             self.set_objective_sense(value)
         elif parameter_name == "time_limit":
@@ -284,17 +308,30 @@ cdef class GLP:
             self.parameters.tol_piv = float(value)
         elif parameter_name == "tolerance_integer":
             self.integer_parameters.tol_int = float(value)
-        elif parameter_name == "mip_gap":
+        elif parameter_name == "mip_gap" or parameter_name == "MIP_gap":
             self.integer_parameters.mip_gap = float(value)
-        elif parameter_name == "output_verbosity":
-            if value is False:
-                self.parameters.msg_lev = GLP_MSG_ERR
-            elif value is None:
+        elif parameter_name == "verbose":
+            if not value:  # suppress all output
                 self.parameters.msg_lev = GLP_MSG_OFF
+                glp_term_hook(NULL, NULL)
+                return
+            glp_term_hook(hook, NULL)
+            if value == "err":
+                self.parameters.msg_lev = GLP_MSG_ERR
             elif value is True or value == "all":
                 self.parameters.msg_lev = GLP_MSG_ALL
             elif value == "normal":
                 self.parameters.msg_lev = GLP_MSG_ON
+        elif parameter_name == "iteration_limit":
+            self.parameters.it_lim = value
+        elif parameter_name == "lp_method":
+            self.parameters.meth = METHODS[value]
+        elif parameter_name == "threads":
+            _warn("multiple threads not supported")
+        elif parameter_name == "MIP_gap_abs":
+            _warn("setting aboslute mip gap not supported")
+        else:
+            raise ValueError("unknown parameter " + str(parameter_name))
 
     cpdef get_objective_value(self):
         if self.is_mip():
@@ -322,20 +359,20 @@ cdef class GLP:
         if self.is_mip():
             for i in range(1, n + 1):
                     x[i - 1] = glp_mip_col_val(glp, i)
-            #x = [glp_mip_col_val(glp, i) for i in range(1, n + 1)]
-            solution.x_dict = {rxn.id: x[i] for i, rxn in enumerate(cobra_model.reactions)}
+            solution.x_dict = {rxn.id: x[i] for i, rxn
+                               in enumerate(cobra_model.reactions)}
             solution.x = x
         else:
             for i in range(1, n + 1):
                 x[i - 1] = glp_get_col_prim(glp, i)
-            #x = [glp_get_col_prim(glp, i) for i in range(1, n + 1)]
-            solution.x_dict = {rxn.id: x[i] for i, rxn in enumerate(cobra_model.reactions)}
+            solution.x_dict = {rxn.id: x[i] for i, rxn
+                               in enumerate(cobra_model.reactions)}
             solution.x = x
             y = [0] * m
             for i in range(1, m + 1):
                 y[i - 1] = glp_get_row_dual(glp, i)
-            #y = [glp_get_row_dual(glp, i) for i in range(1, m + 1)]
-            solution.y_dict = {met.id: y[i] for i, met in enumerate(cobra_model.metabolites)}
+            solution.y_dict = {met.id: y[i] for i, met
+                               in enumerate(cobra_model.metabolites)}
             solution.y = y
         return solution
 
@@ -369,13 +406,16 @@ cdef class GLP:
     def __copy__(self):
         other = GLP()
         glp_copy_prob(other.glp, self.glp, GLP_ON)
+        other.parameters = self.parameters
+        other.integer_parameters = self.integer_parameters
         return other
 
 # wrappers for all the functions at the module level
 create_problem = GLP.create_problem
 def set_objective_sense(lp, objective_sense="maximize"):
     return lp.set_objective_sense(lp, objective_sense=objective_sense)
-cpdef change_variable_bounds(lp, int index, double lower_bound, double upper_bound):
+cpdef change_variable_bounds(lp, int index,
+                             double lower_bound, double upper_bound):
     return lp.change_variable_bounds(index, lower_bound, upper_bound)
 cpdef change_variable_objective(lp, int index, double value):
     return lp.change_variable_objective(index, value)

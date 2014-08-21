@@ -261,8 +261,7 @@ class Model(Object):
 
     def optimize(self, objective_sense='maximize', solver=None,
                  quadratic_component=None,
-                 tolerance_optimality=1e-6, tolerance_feasibility=1e-6,
-                 tolerance_barrier=1e-10, **kwargs):
+                 **kwargs):
         """Optimize model using flux balance analysis
 
         objective_sense: 'maximize' or 'minimize'
@@ -275,11 +274,11 @@ class Model(Object):
             This sets the quadratic component (Q) of the objective coefficient,
             adding :math:`\\frac{1}{2} v^T \cdot Q \cdot v` to the objective.
 
-        tolerance_optimality: Solver tolerance for optimality.
-
         tolerance_feasibility: Solver tolerance for feasibility.
 
-        tolerance_barrier: Solver tolerance for barrier method
+        tolerance_markowitz: Solver threshold during pivot
+
+        time_limit: Maximum solver time (in seconds)
 
         .. NOTE :: Only the most commonly used parameters are presented here. 
                    Additional parameters for cobra.solvers may be available and
@@ -294,9 +293,6 @@ class Model(Object):
         the_solution = optimize(self, solver=solver,
                                 objective_sense=objective_sense,
                                 quadratic_component=quadratic_component,
-                                tolerance_optimality=tolerance_optimality,
-                                tolerance_feasibility=tolerance_feasibility,
-                                tolerance_barrier=tolerance_barrier,
                                 **kwargs)
         self.solution = the_solution
         return the_solution
@@ -323,13 +319,29 @@ class Model(Object):
             except:
                 warn('%s not in %s'%(the_reaction, self))
 
-    def repair(self):
+    def repair(self, rebuild_index=True, rebuild_relationships=True):
         """Update all indexes and pointers in a model"""
-        # DictList indexes
-        self.reactions._generate_index()
-        self.metabolites._generate_index()
-        self.genes._generate_index()
-        return  # TODO update the pointers as well
+        if rebuild_index:  # DictList indexes
+            self.reactions._generate_index()
+            self.metabolites._generate_index()
+            self.genes._generate_index()
+        if rebuild_relationships:
+            for met in self.metabolites:
+                met._reaction.clear()
+            for gene in self.genes:
+                gene._reaction.clear()
+            for rxn in self.reactions:
+                for met in rxn._metabolites:
+                    met._reaction.add(rxn)
+                for gene in rxn._genes:
+                    gene._reaction.add(rxn)
+        # point _model to self
+        for l in (self.reactions, self.genes, self.metabolites):
+            for e in l:
+                e._model = self
+        if self.solution is None:
+            self.solution = Solution(None)
+        return
 
     def change_objective(self, objectives):
         """Change the objective in the cobrapy model.
