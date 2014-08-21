@@ -150,7 +150,7 @@ def revert_to_reversible(cobra_model, update_solution=True):
     #probably speed things up here.
     cobra_model.remove_reactions(reverse_reactions)
     # fix the solution
-    if update_solution and cobra_model.solution is not None:
+    if update_solution and cobra_model.solution.status is not "NA":
         x_dict = cobra_model.solution.x_dict
         for reverse in reverse_reactions:
             forward = reverse.reflection
