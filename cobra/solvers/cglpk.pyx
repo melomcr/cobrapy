@@ -4,6 +4,7 @@
 from glpk cimport *
 from libc.stdlib cimport malloc, free
 from cpython cimport bool
+from cpython.version cimport PY_MAJOR_VERSION
 
 from tempfile import NamedTemporaryFile as _NamedTemporaryFile  # for pickling
 from os import unlink as _unlink
@@ -17,6 +18,9 @@ __doc__ = """Bindings to GLPK
 
 The GNU Linear Programming Kit (GLPK) is released under the GPL.
 The source can be downloaded from http://www.gnu.org/software/glpk/
+
+The GNU Multiple Precision Arithmetic Library (GMP) is released under the GPL.
+The source can be downloaded from https://gmplib.org/
 
 """
 
@@ -95,6 +99,7 @@ cdef class GLP:
     cdef glp_prob *glp
     cdef glp_smcp parameters
     cdef glp_iocp integer_parameters
+    cdef public bool exact
 
     # cython related allocation/dellocation functions
     def __cinit__(self):
@@ -102,6 +107,7 @@ cdef class GLP:
         glp_set_obj_dir(self.glp, GLP_MAX)  # default is maximize
         glp_init_smcp(&self.parameters)
         glp_init_iocp(&self.integer_parameters)
+        self.exact = False
 
     def __dealloc__(self):
         glp_delete_prob(self.glp)
@@ -188,11 +194,11 @@ cdef class GLP:
         free(c_values)
 
     # problem creation and modification
+    @classmethod
     def create_problem(cls, cobra_model, objective_sense="maximize"):
         problem = cls(cobra_model)
         problem.set_objective_sense(objective_sense)
         return problem
-    create_problem = classmethod(create_problem)  # decorator does not work
 
     cpdef change_variable_bounds(self, int index, double lower_bound,
                                  double upper_bound):
@@ -253,6 +259,8 @@ cdef class GLP:
         if glp_simplex(glp, &parameters) != 0:
             glp_adv_basis(glp, 0)
             check_error(glp_simplex(glp, &parameters))
+        if self.exact:
+            check_error(glp_exact(glp, &parameters))
         if self.is_mip():
             self.integer_parameters.tm_lim = self.parameters.tm_lim
             self.integer_parameters.msg_lev = self.parameters.msg_lev
@@ -262,14 +270,12 @@ cdef class GLP:
             check_error(glp_intopt(glp, &integer_parameters))
         return self.get_status()
 
+    @classmethod
     def solve(cls, cobra_model, **kwargs):
         problem = cls.create_problem(cobra_model)
         problem.solve_problem(**kwargs)
         solution = problem.format_solution(cobra_model)
-        #cobra_model.solution = solution
-        #return {"the_problem": problem, "the_solution": solution}
         return solution
-    solve = classmethod(solve)
 
     def get_status(self):
         cdef int result = glp_mip_status(self.glp) if self.is_mip() \
@@ -326,6 +332,8 @@ cdef class GLP:
             self.parameters.it_lim = value
         elif parameter_name == "lp_method":
             self.parameters.meth = METHODS[value]
+        elif parameter_name == "exact":
+            self.exact = value
         elif parameter_name == "threads":
             _warn("multiple threads not supported")
         elif parameter_name == "MIP_gap_abs":
@@ -408,7 +416,33 @@ cdef class GLP:
         glp_copy_prob(other.glp, self.glp, GLP_ON)
         other.parameters = self.parameters
         other.integer_parameters = self.integer_parameters
+        other.exact = self.exact
         return other
+
+    def write(self, filename):
+        """Write the problem to a file
+
+        The format will be determined by the file extension.
+            .lp: LP file
+            .mps: MPS file
+        """
+        if PY_MAJOR_VERSION == 2:
+            b_name = bytes(filename)
+        elif PY_MAJOR_VERSION == 3:
+            b_name = bytes(filename, "latin-1")
+        else:
+            raise RuntimeError("Unknown python version")
+        cdef char *c_name = <bytes> b_name
+        cdef int res
+        if b_name.endswith(".lp"):
+            res = glp_write_lp(self.glp, NULL, c_name)
+        elif b_name.endswith(".mps"):
+            res = glp_write_mps(self.glp, GLP_MPS_FILE, NULL, c_name)
+        else:
+            raise ValueError("Unknown file format for %s" % str(filename))
+        if res != 0:
+            raise IOError("failed to write LP to file %s" % str(filename))
+
 
 # wrappers for all the functions at the module level
 create_problem = GLP.create_problem

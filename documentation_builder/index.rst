@@ -1,5 +1,8 @@
 Documentation for COBRApy
 =========================
+For installation instructions, please see `INSTALL.md
+<https://github.com/opencobra/cobrapy/blob/master/INSTALL.md>`_.
+
 .. toctree::
     :numbered:
     :maxdepth: 2
@@ -13,6 +16,8 @@ Documentation for COBRApy
     escher
     milp
     qp
+    loopless
+    faq
     cobra
 
 

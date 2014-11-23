@@ -4,8 +4,6 @@
 from .. import Model, Reaction, Metabolite, Formula
 from os.path import isfile
 from os import name as __name
-from copy import deepcopy
-from time import time
 from warnings import warn
 import re
 from math import isnan, isinf
@@ -187,14 +185,24 @@ def create_cobra_model_from_sbml_file(sbml_filename, old_sbml=False, legacy_meta
             tmp_metabolite_id = sbml_metabolite.getSpecies()
             #This deals with boundary metabolites
             if tmp_metabolite_id in metabolite_dict:
-                tmp_metabolite = deepcopy(metabolite_dict[tmp_metabolite_id])
+                tmp_metabolite = metabolite_dict[tmp_metabolite_id]
                 cobra_metabolites[tmp_metabolite] = -sbml_metabolite.getStoichiometry()
         for sbml_metabolite in sbml_reaction.getListOfProducts():
             tmp_metabolite_id = sbml_metabolite.getSpecies()
             #This deals with boundary metabolites
             if tmp_metabolite_id in metabolite_dict:
-                tmp_metabolite = deepcopy(metabolite_dict[tmp_metabolite_id])
-                cobra_metabolites[tmp_metabolite] = sbml_metabolite.getStoichiometry()
+                tmp_metabolite = metabolite_dict[tmp_metabolite_id]
+                # Handle the case where the metabolite was specified both
+                # as a reactant and as a product.
+                if tmp_metabolite in cobra_metabolites:
+                    warn("%s appears as a reactant and product %s" %
+                         (tmp_metabolite_id, reaction.id))
+                    cobra_metabolites[tmp_metabolite] += sbml_metabolite.getStoichiometry()
+                    # if the combined stoichiometry is 0, remove the metabolite
+                    if cobra_metabolites[tmp_metabolite] == 0:
+                        cobra_metabolites.pop(tmp_metabolite)
+                else:
+                    cobra_metabolites[tmp_metabolite] = sbml_metabolite.getStoichiometry()
         reaction.add_metabolites(cobra_metabolites)
         #Parse the kinetic law info here.
         parameter_dict = {}
@@ -252,7 +260,11 @@ def create_cobra_model_from_sbml_file(sbml_filename, old_sbml=False, legacy_meta
         #TODO: READ IN OTHER NOTES AND GIVE THEM A reaction_ prefix.
         #TODO: Make sure genes get added as objects
         if 'GENE ASSOCIATION' in reaction_note_dict:
-            reaction.gene_reaction_rule = reaction_note_dict['GENE ASSOCIATION'][0]
+            try:
+                rule = reaction_note_dict['GENE ASSOCIATION'][0].encode('ascii')
+                reaction.gene_reaction_rule = str(rule)
+            except:
+                warn("gene_reaction_rule is not ascii compliant")
             if 'GENE LIST' in reaction_note_dict:
                 reaction.systematic_names = reaction_note_dict['GENE LIST'][0]
             elif 'GENES' in reaction_note_dict and \
@@ -416,7 +428,6 @@ def write_cobra_model_to_sbml_file(cobra_model, sbml_filename,
         #Deal with the case where the reaction is a boundary reaction
         if len(the_reaction._metabolites) == 1:
             the_metabolite, the_coefficient = list(the_reaction._metabolites.items())[0]
-            the_metabolite = the_metabolite.copy()
             metabolite_id = add_sbml_species(sbml_model, the_metabolite,
                                              note_start_tag=note_start_tag,
                                              note_end_tag=note_end_tag,
@@ -519,11 +530,12 @@ def add_sbml_species(sbml_model, cobra_metabolite, note_start_tag,
         sbml_species.setName(cobra_metabolite.name)
     else:
         sbml_species.setName(cobra_metabolite.id)
-    try:
-        sbml_species.setCompartment(the_compartment)
-    except:
-        warn('metabolite failed: ' + the_id)
-        return cobra_metabolite
+    if the_compartment is not None:
+        try:
+            sbml_species.setCompartment(the_compartment)
+        except:
+            warn('metabolite failed: ' + the_id)
+            return cobra_metabolite
     if cobra_metabolite.charge is not None:
         sbml_species.setCharge(cobra_metabolite.charge)
     if hasattr(cobra_metabolite.formula, 'id') or \
@@ -579,7 +591,7 @@ def fix_legacy_id(id, use_hyphens=False, fix_compartments=False):
 
 def read_legacy_sbml(filename, use_hyphens=False):
     """read in an sbml file and fix the sbml id's"""
-    model = create_cobra_model_from_sbml_file(filename)
+    model = create_cobra_model_from_sbml_file(filename, old_sbml=True)
     for metabolite in model.metabolites:
         metabolite.id = fix_legacy_id(metabolite.id)
     model.metabolites._generate_index()

@@ -23,8 +23,9 @@ Python 3 support is still considered experimental.
 
 ### GNU/Linux
 0. [install pip] (http://pip.readthedocs.org/en/latest/installing.html).
-1. Install the glpk library. On debian-based systems (including Ubuntu
-   and Mint), this can be done with ```sudo apt-get install libglpk-dev```
+1. Install the glpk and gmp libraries. On debian-based systems (including
+   Ubuntu and Mint), this can be done with
+   ```sudo apt-get install libglpk-dev libgmp-dev```
 3. In a terminal, run ```sudo pip install cobra --pre```
 
 ### Microsoft Windows
@@ -34,10 +35,11 @@ index](https://pypi.python.org/pypi/cobra/).
 
 
 ## Hacking version installation
-Use pip to install [Cython](http://cython.org/). Install libglpk using your
-package manger. This would be ```brew install glpk``` on a Mac and
-```sudo apt-get install libglpk-dev``` on debian-based systems (including
-Ubuntu and Mint). This can also be installed by compiling GLPK from source.
+Use pip to install [Cython](http://cython.org/). Install libglpk and libgmp
+using your package manger. This would be ```brew install glpk gmp``` on a Mac
+and ```sudo apt-get install libglpk-dev libgmp-dev``` on debian-based systems
+(including Ubuntu and Mint). They can obviously also be compiled from the
+released source.
 
 Clone the git repository using your preferred mothod. Cloning from your
 own [github fork](https://help.github.com/articles/fork-a-repo) is recommended!
@@ -66,17 +68,22 @@ cobrapy comes with bindings to the GNU Linear Programming Kit ([glpk]
 cobrapy. In addition, cobrapy currently supports these linear programming
 solvers:
 
- * ILOG/CPLEX
+ * ILOG/CPLEX (available with
   [Academic](https://www.ibm.com/developerworks/university/academicinitiative/)
+  and
   [Commercial](http://www.ibm.com/software/integration/optimization/cplex-optimizer/)
+  licenses).
  * [gurobi](http://gurobi.com)
- * GLPK through [pyGLPK](http://tfinley.net/software/pyglpk/)
+ * [QSopt_ex esolver](http://www.dii.uchile.cl/~daespino/ESolver_doc/main.html)
+ * [MOSEK](http://www.mosek.com/)
 
 ILOG/CPLEX and Gurobi are commercial software packages that, currently, 
 provide free licenses for academics and support both linear and quadratic 
 programming. GLPK is an opensource linear programming solver; however, it 
 does not support quadratic programming and is not as robust as the 
 commercial solvers when it comes to mixed-integer linear programming.
+QSopt_ex esolver is also open source, and can solve linear programs
+using rational operations, giving exact solutions.
 
 
 # Testing your installation

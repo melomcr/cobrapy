@@ -9,7 +9,7 @@ from os.path import isfile, abspath, dirname, join
 
 # import version to get the version string
 path.insert(0, abspath(join(dirname(__file__), "cobra")))
-from version import get_version
+from version import get_version, update_release_version
 path.pop(0)
 __version = get_version(pep440=True)
 
@@ -19,6 +19,11 @@ try:
     import multiprocessing
 except:
     None
+
+# If building something for distribution, ensure the VERSION
+# file is up to date
+if "sdist" in argv or "bdist_wheel" in argv:
+    update_release_version()
 
 # cython is optional for building. The c file can be used directly. However,
 # for certain functions, the c file must be generated, which requires cython.
@@ -55,18 +60,58 @@ try:
                 None
 
     build_args = {}
-    if system() == "Darwin":  # otherwise Mac Clang gives errors
-        build_args["extra_compile_args"] = ["-Qunused-arguments"]
-    build_args["libraries"] = ["glpk"]
     setup_kwargs["cmdclass"] = {"build_ext": FailBuild}
-    # To statically link libglpk to the built extension, add the glpk.h header
-    # and static library libglpk.a to the build directory. A static libglpk.a
-    # can be built by running configure with the export CLFAGS="-fPIC" and
-    # copying the file from src/.libs
+    # MAC OS X needs some additional configuration tweaks
+    if system() == "Darwin":
+        build_args["extra_compile_args"] = [
+            # Otherwise Clang gives errors on some versions
+            "-Qunused-arguments",
+            # Cython will output C which could generate warnings in clang
+            # due to the addition of additional unneeded functions. Because
+            # this is a known phenomenon, these warnings are silenced to
+            # make other potential warnings which do signal errors stand
+            # out.
+            "-Wno-unneeded-internal-declaration",
+            "-Wno-unused-function"]
+        # If making a wheel, the platform string needs to be modified to allow
+        # other possible platforms to install. For more information, see
+        # http://lepture.com/en/2014/python-on-a-hard-wheel
+        # This snippet is inspired by setup.py from mistune
+        # https://github.com/lepture/mistune/blob/3ae489a/setup.py
+        try:
+            from wheel.bdist_wheel import bdist_wheel
+
+            class _bdist_wheel(bdist_wheel):
+                def get_tag(self):
+                    tag = bdist_wheel.get_tag(self)
+                    possible_tags = ("macosx_10_6_intel",
+                                     "macosx_10_9_intel",
+                                     "macosx_10_9_x86_64")
+                    if tag[2] in possible_tags:
+                        tag = (tag[0], tag[1], ".".join(possible_tags))
+                    return tag
+
+            setup_kwargs["cmdclass"]["bdist_wheel"] = _bdist_wheel
+
+        except ImportError:
+            pass
+
+    if system() == "Windows":
+        build_args["libraries"] = ["glpk"]
+    else:
+        build_args["libraries"] = ["glpk", "gmp"]
+    # It is possible to statically link libglpk to the built extension. This
+    # allows for simplified installation without the need to install libglpk to
+    # the system, and is also usueful when installing a particular version of
+    # glpk which conflicts with thesystem version. A static libglpk.a can be
+    # built by running configure with the export CLFAGS="-fPIC" and copying the
+    # file from src/.libs to either the default lib directory or to the build
+    # directory. For an example script, see
+    # https://gist.github.com/aebrahim/94a2b231d86821f7f225
     include_dirs = []
     library_dirs = []
-    if isfile("libglpk.a"):
-        library_dirs.append(dirname(abspath("libglpk.a")))
+    if isfile("libglpk.a") or isfile ("libgmp.a"):
+        library_dirs.append(abspath("."))
     if isfile("glpk.h"):
         include_dirs.append(dirname(abspath("glpk.h")))
     if name == "posix":
